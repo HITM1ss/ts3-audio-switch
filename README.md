@@ -74,7 +74,7 @@ Windows 系统音频服务                     TeamSpeak 3 主线程
 1. 插件通过 **Windows Core Audio API（WASAPI）** 注册 `IMMNotificationClient`，监听系统默认播放设备变化（`eRender` + `eConsole`，即任务栏音量所指的默认设备）。
 2. 设备变化回调运行在**系统音频线程**，不能直接操作 TS3，因此通过 `PostMessage` 把新设备 ID 投递给插件创建的隐藏窗口。
 3. 窗口过程运行在 **TS3 客户端主线程**，在其中调用 SDK 的 `openPlaybackDevice()`，对当前所有已连接的服务器连接同步切换输出设备。
-4. 新服务器连接建立时（`STATUS_CONNECTION_ESTABLISHED`）也会自动同步一次，保证新连接使用正确设备。
+4. 插件启动及新服务器连接建立时都会自动同步一次；连接建立后的同步会短暂延迟，等待 TS3 完成播放设备初始化。
 
 ---
 
