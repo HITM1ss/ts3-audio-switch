@@ -48,13 +48,14 @@
 /* ---------- 插件元数据 ---------- */
 #define PLUGIN_API_VERSION 26
 #define PLUGIN_NAME        "SystemAudioFollow"
-#define PLUGIN_VERSION     "1.0.9"
+#define PLUGIN_VERSION     "1.1.0"
 #define PLUGIN_AUTHOR      "WorkBuddy"
 #define PLUGIN_DESCRIPTION "Windows 默认输出设备切换时，自动同步 TeamSpeak 3 的输出设备"
 #define CONFIG_FILENAME    "audio_follow.ini"
 
 /* 自定义窗口消息 */
 #define WM_APP_FOLLOW (WM_APP + 1)   /* 系统默认设备已切换，lParam = char* 设备ID(需free) */
+#define WM_APP_SYNC   (WM_APP + 2)   /* 请求在隐藏窗口线程中同步当前默认设备 */
 
 /* ---------- 全局状态 ---------- */
 static struct TS3Functions ts3Functions;   /* 客户端注入的函数指针表 */
@@ -557,6 +558,13 @@ LRESULT CALLBACK FollowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
         return 0;
     }
 
+    if (msg == WM_APP_SYNC) {
+        /* TS3 在插件加载或连接刚建立时可能仍在初始化播放设备。
+         * 短暂延迟后再同步，同时保证所有 SDK 调用都发生在隐藏窗口线程。 */
+        SetTimer(hwnd, 3, 500, NULL);
+        return 0;
+    }
+
     if (msg == WM_TIMER && wParam == 1) {
         KillTimer(hwnd, 1);
         PollDefaultDevice();   /* 事件唤醒后立即执行与轮询相同的可靠检查 */
@@ -565,6 +573,12 @@ LRESULT CALLBACK FollowWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
 
     if (msg == WM_TIMER && wParam == 2) {
         PollDefaultDevice();   /* 2 秒轮询兜底 */
+        return 0;
+    }
+
+    if (msg == WM_TIMER && wParam == 3) {
+        KillTimer(hwnd, 3);
+        SyncToSystemDefault();
         return 0;
     }
 
@@ -814,9 +828,9 @@ __declspec(dllexport) int ts3plugin_init()
     if (g_hwnd) {
         /* 2 秒轮询兜底：即使系统设备变化事件丢失也能可靠跟随 */
         SetTimer((HWND)g_hwnd, 2, 2000, NULL);
+        /* 启动时同步一次。若此时尚未建立服务器连接，连接建立回调会再次请求同步。 */
+        PostMessageA((HWND)g_hwnd, WM_APP_SYNC, 0, 0);
     }
-    /* 注意：启动时不主动切换设备，避免干扰 TS3 当前音频设置。
-     * 只在用户切换系统默认输出设备时（或手动点菜单）才跟随。 */
     Log("SystemAudioFollow %s loaded (%s)", PLUGIN_VERSION,
         g_enabled ? "follow enabled" : "follow disabled");
     return 0;   /* 0 = 加载成功 */
@@ -828,6 +842,7 @@ __declspec(dllexport) void ts3plugin_shutdown()
     if (g_hwnd) {
         KillTimer((HWND)g_hwnd, 2);
         KillTimer((HWND)g_hwnd, 1);
+        KillTimer((HWND)g_hwnd, 3);
         DestroyWindow((HWND)g_hwnd);
         g_hwnd = NULL;
     }
@@ -890,12 +905,15 @@ __declspec(dllexport) void ts3plugin_onMenuItemEvent(uint64 /*serverConnectionHa
     }
 }
 
-/* 连接状态变化：不主动切换设备（TS3 会按客户端设置自动打开播放设备，
- * 插件不应在此时干预，避免打断音频初始化）。保持监听即可。 */
+/* 连接建立后再次请求同步：插件加载时通常还没有已建立的服务器连接。 */
 __declspec(dllexport) void ts3plugin_onConnectStatusChangeEvent(uint64 /*serverConnectionHandlerID*/,
-                                                                int /*newStatus*/,
+                                                                int newStatus,
                                                                 unsigned int /*errorNumber*/)
 {
+    if (newStatus == STATUS_CONNECTION_ESTABLISHED && g_enabled && g_hwnd) {
+        /* 回调不直接调用 TS3 SDK；由隐藏窗口线程执行实际同步。 */
+        PostMessageA((HWND)g_hwnd, WM_APP_SYNC, 0, 0);
+    }
 }
 
 /* 释放客户端要求插件释放的内存 */
